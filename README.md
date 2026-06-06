@@ -4,6 +4,11 @@ A Claude Code plugin that turns a codebase scan into an **interactive, self-cont
 map** — a pan/zoom node graph with a clickable detail panel, search, layer filters, flow
 walkthroughs, and matrices, where **every node is cited to a real file**.
 
+![code-map preview — an interactive architecture map](docs/preview.png)
+
+> _Above: a sample map. Click a node to spotlight its connections and see its files; click an
+> edge to read what flows between two parts; pick a flow tab to trace a whole path._
+
 Two modes:
 
 - **`architecture`** — the whole system at a glance.
