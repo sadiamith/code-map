@@ -1,0 +1,116 @@
+{
+  "title": "Example API — Architecture",
+  "subtitle": "A worked example shipped with the code-map skill (Bun + Hono API + background worker, one Postgres).",
+  "summary": "A two-process system: a synchronous HTTP API and a background worker sharing one database. Use this file as a template for the shape of a real data.json.",
+  "mode": "architecture",
+  "meta": ["Bun + Hono", "Postgres + Prisma", "Worker queue"],
+  "layers": [
+    { "key": "api", "label": "API", "color": "#2563eb" },
+    { "key": "worker", "label": "Worker", "color": "#7c3aed" },
+    { "key": "data", "label": "Data", "color": "#b45309" },
+    { "key": "external", "label": "External", "color": "#475569" }
+  ],
+  "clusters": [
+    { "key": "surface", "label": "Request surface", "row": 0 },
+    { "key": "service", "label": "API service", "row": 0 },
+    { "key": "persist", "label": "Persistence", "row": 0 },
+    { "key": "bg", "label": "Worker", "row": 1 },
+    { "key": "ext", "label": "External", "row": 1 }
+  ],
+  "nodes": [
+    { "id": "dashboard", "label": "Dashboard SPA", "hint": "browser client", "layer": "external", "cluster": "surface",
+      "description": "Browser frontend that calls the API with a session token and renders the dashboard.",
+      "decisions": ["Talks only to the public API; never to the worker or DB directly."],
+      "files": ["src/index.ts"], "data": ["User", "Session"] },
+    { "id": "api-server", "label": "API server", "hint": "Bun + Hono", "layer": "api", "cluster": "service",
+      "description": "Public HTTP service. Mounts CORS, security headers, logging, docs, and the /api/v1 routes.",
+      "decisions": ["Holds no encryption key; secret handling is delegated to the worker."],
+      "files": ["src/index.ts", "src/openapi/app.ts"], "data": ["OpenAPI spec"] },
+    { "id": "middleware", "label": "Middleware", "hint": "auth, rate limit", "layer": "api", "cluster": "service",
+      "description": "Request logging, rate limiting, authentication, and the global error handler.",
+      "decisions": ["Rate limiting fails open if the limiter store is down, to avoid a full outage."],
+      "files": ["src/middleware/auth.ts", "src/middleware/rateLimit.ts"], "data": ["rate-limit keys"] },
+    { "id": "routes", "label": "v1 routes", "hint": "the router", "layer": "api", "cluster": "service",
+      "description": "Mounts the versioned route modules and wires each to its controller + OpenAPI metadata.",
+      "decisions": ["Each route file owns its own OpenAPI metadata so generated SDKs stay accurate."],
+      "files": ["src/routes/v1/index.ts"], "data": ["route contracts"] },
+    { "id": "services", "label": "Services", "hint": "business logic", "layer": "api", "cluster": "service",
+      "description": "Where business decisions live; controllers stay thin and call into these.",
+      "decisions": ["Org scoping is explicit — services take an organizationId from auth context."],
+      "files": ["src/services/usage.service.ts", "src/services/billing.service.ts"], "data": ["domain models"] },
+    { "id": "repos", "label": "Repositories", "hint": "Prisma boundary", "layer": "data", "cluster": "persist",
+      "description": "Isolate Prisma queries, raw SQL, public mapping, and tenant scoping.",
+      "decisions": ["Raw SQL is used where Prisma can't express queue locking or fast summaries."],
+      "files": ["src/repositories/telemetry.repository.ts"], "data": ["all Prisma models"] },
+    { "id": "postgres", "label": "Postgres", "hint": "Prisma schema", "layer": "data", "cluster": "persist",
+      "description": "Stores identity, org resources, the job queue, and domain data.",
+      "decisions": ["Jobs are locked with FOR UPDATE SKIP LOCKED for multi-worker safety."],
+      "files": ["prisma/schema.prisma"], "data": ["User", "Job", "Organization"] },
+    { "id": "scheduler", "label": "Scheduler", "hint": "UTC cron", "layer": "worker", "cluster": "bg",
+      "description": "Cron tasks that enqueue durable jobs; they do no work themselves.",
+      "decisions": ["Schedules are UTC for consistent day/month boundaries."],
+      "files": ["worker/scheduler/index.ts"], "data": ["Job rows"] },
+    { "id": "runner", "label": "Job runner", "hint": "dispatch loop", "layer": "worker", "cluster": "bg",
+      "description": "Polls the queue, locks one job, dispatches by type, and requeues or fails on error.",
+      "decisions": ["Unknown job types fail explicitly to protect against silent queue drift."],
+      "files": ["worker/runner/index.ts"], "data": ["JOB_TYPES"] },
+    { "id": "providers", "label": "External APIs", "hint": "Stripe, providers", "layer": "external", "cluster": "ext",
+      "description": "Third-party services the worker and services call out to.",
+      "decisions": ["Provider error classes preserve 401/403/429 semantics for handlers."],
+      "files": ["src/services/stripe.service.ts"], "data": ["Invoice", "usage"] }
+  ],
+  "edges": [
+    ["dashboard", "api-server", "HTTP"],
+    ["api-server", "middleware", "all requests"],
+    ["middleware", "routes", "allowed"],
+    ["routes", "services", "handler"],
+    ["services", "repos", "queries"],
+    ["repos", "postgres", "Prisma / SQL"],
+    ["scheduler", "runner", "enqueue"],
+    ["runner", "services", "run jobs"],
+    ["services", "providers", "API calls"]
+  ],
+  "flows": [
+    {
+      "id": "request", "label": "Read request", "title": "A dashboard read, end to end",
+      "nodes": ["dashboard", "api-server", "middleware", "routes", "services", "repos", "postgres"],
+      "steps": [
+        "Dashboard sends an authenticated GET.",
+        "Middleware logs, rate-limits, and authenticates the request.",
+        "The router resolves the path and calls the controller.",
+        "A service aggregates data, scoped to the caller's org.",
+        "Repositories run tenant-scoped queries against Postgres."
+      ],
+      "decisions": ["Reads are synchronous and org-scoped; heavy work is pushed to the worker."]
+    }
+  ],
+  "matrices": [
+    {
+      "title": "Endpoint matrix",
+      "headers": ["Area", "Route", "Auth"],
+      "rows": [
+        ["Auth", "GET /api/v1/auth/me", "session"],
+        ["Usage", "GET /api/v1/usage/summary", "session"],
+        ["Billing", "GET /api/v1/billing/periods", "session + paid tier"],
+        ["Webhooks", "POST /api/v1/webhooks/stripe", "signature"]
+      ]
+    }
+  ],
+  "walkthroughs": [
+    {
+      "id": "read", "label": "Dashboard read",
+      "header": { "kind": "GET", "path": "/api/v1/usage/summary", "pairs": [["Authorization", "Bearer <token>"]] },
+      "stages": [
+        { "layer": "external", "title": "Dashboard SPA", "desc": "Browser issues the fetch with a session token.", "file": null, "badge": null },
+        { "layer": "api", "title": "Middleware", "desc": "Logs, rate-limits, authenticates.", "file": "src/middleware/auth.ts", "badge": { "type": "gate", "text": "401 if invalid" } },
+        { "layer": "api", "title": "Service", "desc": "Aggregates the summary, scoped to the org.", "file": "src/services/usage.service.ts", "badge": null },
+        { "layer": "data", "title": "Postgres", "desc": "Tenant-scoped query returns rows.", "file": "prisma/schema.prisma", "badge": null },
+        { "layer": "api", "title": "Response", "desc": "Serialized DTO returns to the browser.", "file": null, "badge": { "type": "return", "text": "200 application/json" } }
+      ]
+    }
+  ],
+  "notes": [
+    { "kind": "ok", "text": "Two-process model: synchronous API + durable background worker, sharing one Postgres." },
+    { "kind": "info", "text": "This is an example input. Replace it with a scan of your own repo — every node's files[] must point at real paths." }
+  ]
+}

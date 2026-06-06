@@ -1,0 +1,19 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "code-map",
+  "description": "Interactive codebase-map skill: scan a repo, get a self-contained interactive HTML map.",
+  "owner": {
+    "name": "Sadi Mohammad Mustafa",
+    "email": "sadi.mohammadmustafa@gmail.com"
+  },
+  "plugins": [
+    {
+      "name": "code-map",
+      "description": "Generate an interactive, self-contained HTML map of a codebase — pan/zoom node graph, detail panel, search, layer filters, flow walkthroughs, and matrices, every node cited to real files. Modes: architecture (whole system) and flow (one pipeline).",
+      "version": "0.1.0",
+      "source": "./",
+      "author": { "name": "Sadi Mohammad Mustafa" },
+      "category": "documentation"
+    }
+  ]
+}

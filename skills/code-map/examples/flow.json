@@ -1,0 +1,102 @@
+{
+  "title": "Example API — Checkout & Billing Flow",
+  "subtitle": "A single business-logic path traced end to end: cart → validate → charge → persist → notify.",
+  "summary": "Flow mode scopes the map to the stages of ONE pipeline, left to right, rather than the whole system. Use it to answer \"what happens when a customer checks out?\"",
+  "mode": "flow",
+  "meta": ["flow mode", "checkout", "Stripe"],
+  "layers": [
+    { "key": "request", "label": "Request", "color": "#2563eb" },
+    { "key": "validate", "label": "Validate", "color": "#0f766e" },
+    { "key": "payment", "label": "Payment", "color": "#7c3aed" },
+    { "key": "persist", "label": "Persist", "color": "#b45309" },
+    { "key": "notify", "label": "Notify", "color": "#047857" }
+  ],
+  "clusters": [
+    { "key": "in", "label": "Incoming", "row": 0 },
+    { "key": "proc", "label": "Processing", "row": 0 },
+    { "key": "pay", "label": "Payment", "row": 0 },
+    { "key": "out", "label": "Persist & notify", "row": 0 }
+  ],
+  "nodes": [
+    { "id": "checkout-req", "label": "Checkout request", "hint": "POST /checkout", "layer": "request", "cluster": "in",
+      "description": "Authenticated request with a cart id and a payment method.",
+      "decisions": ["Idempotency key required so retries don't double-charge."],
+      "files": ["src/controllers/checkout.controller.ts"], "data": ["Cart", "PaymentMethod"] },
+    { "id": "validate-cart", "label": "Validate cart", "hint": "stock + pricing", "layer": "validate", "cluster": "proc",
+      "description": "Re-checks item availability and recomputes the price server-side; never trusts the client total.",
+      "decisions": ["Pricing is always recomputed server-side to prevent tampering."],
+      "files": ["src/services/cart.service.ts:88"], "data": ["Cart", "Product", "Price"] },
+    { "id": "create-intent", "label": "Create intent", "hint": "amount + currency", "layer": "payment", "cluster": "pay",
+      "description": "Creates a payment intent for the validated total.",
+      "decisions": ["Amount comes from the server-side price, in minor units."],
+      "files": ["src/services/payment.service.ts"], "data": ["PaymentIntent"] },
+    { "id": "stripe", "label": "Stripe", "hint": "charge", "layer": "payment", "cluster": "pay",
+      "description": "Processes the charge and later posts a webhook with the result.",
+      "decisions": ["Source of truth for payment status is the webhook, not the sync response."],
+      "files": ["src/services/stripe.service.ts"], "data": ["PaymentIntent", "Charge"] },
+    { "id": "save-order", "label": "Save order", "hint": "pending → paid", "layer": "persist", "cluster": "out",
+      "description": "Writes the order row in a pending state; the webhook flips it to paid.",
+      "decisions": ["Order is written before payment confirms so a dropped webhook can be reconciled."],
+      "files": ["src/repositories/order.repository.ts"], "data": ["Order"] },
+    { "id": "webhook", "label": "Payment webhook", "hint": "signed event", "layer": "payment", "cluster": "out",
+      "description": "Verifies the Stripe signature, then advances the order to paid (idempotently).",
+      "decisions": ["Idempotent so duplicate/out-of-order deliveries are safe."],
+      "files": ["src/controllers/webhook.controller.ts"], "data": ["Order", "Charge"] },
+    { "id": "receipt", "label": "Send receipt", "hint": "email", "layer": "notify", "cluster": "out",
+      "description": "On paid, emails the customer a receipt and emits an analytics event.",
+      "decisions": ["Sent from the webhook path so it only fires on confirmed payment."],
+      "files": ["src/services/notify.service.ts"], "data": ["Order", "EmailLog"] }
+  ],
+  "edges": [
+    ["checkout-req", "validate-cart", "cart id"],
+    ["validate-cart", "create-intent", "server total"],
+    ["create-intent", "stripe", "intent"],
+    ["create-intent", "save-order", "pending order"],
+    ["stripe", "webhook", "result"],
+    ["webhook", "save-order", "mark paid"],
+    ["webhook", "receipt", "on paid"]
+  ],
+  "flows": [
+    {
+      "id": "checkout", "label": "Checkout", "title": "A checkout, end to end",
+      "nodes": ["checkout-req", "validate-cart", "create-intent", "stripe", "webhook", "save-order", "receipt"],
+      "steps": [
+        "Customer POSTs a checkout with a cart id + payment method + idempotency key.",
+        "The cart is re-validated and the total recomputed server-side.",
+        "A payment intent is created and a pending order is written.",
+        "Stripe charges the card and posts a signed webhook with the result.",
+        "The webhook (idempotent) flips the order to paid and triggers the receipt email."
+      ],
+      "decisions": ["Payment truth is the webhook; the order exists before payment so drops can be reconciled."]
+    }
+  ],
+  "walkthroughs": [
+    {
+      "id": "happy", "label": "Happy path",
+      "header": { "kind": "POST", "path": "/api/v1/checkout", "pairs": [["Idempotency-Key", "ik_29f…"], ["Authorization", "Bearer <token>"]] },
+      "stages": [
+        { "layer": "request", "title": "Checkout request", "desc": "Cart id + payment method arrive.", "file": "src/controllers/checkout.controller.ts", "badge": null },
+        { "layer": "validate", "title": "Validate + reprice", "desc": "Stock checked; total recomputed server-side.", "file": "src/services/cart.service.ts:88", "badge": { "type": "gate", "text": "409 if out of stock" } },
+        { "layer": "payment", "title": "Create intent + order", "desc": "Payment intent created; order written pending.", "file": "src/services/payment.service.ts", "badge": { "type": "return", "text": "order: pending" } },
+        { "layer": "payment", "title": "Stripe charge", "desc": "Card charged; webhook will confirm.", "file": "src/services/stripe.service.ts", "badge": null },
+        { "layer": "payment", "title": "Webhook → paid", "desc": "Signature verified; order flipped to paid.", "file": "src/controllers/webhook.controller.ts", "badge": { "type": "gate", "text": "400 if bad signature" } },
+        { "layer": "notify", "title": "Receipt", "desc": "Confirmation email sent.", "file": "src/services/notify.service.ts", "badge": { "type": "return", "text": "200 OK" } }
+      ]
+    }
+  ],
+  "matrices": [
+    {
+      "title": "Order states",
+      "headers": ["State", "Set by", "Meaning"],
+      "rows": [
+        ["pending", "create-intent", "Order written, payment not yet confirmed"],
+        ["paid", "webhook", "Stripe confirmed the charge"],
+        ["failed", "webhook", "Charge failed; cart preserved for retry"]
+      ]
+    }
+  ],
+  "notes": [
+    { "kind": "ok", "text": "Idempotency end to end: the idempotency key on the request and the webhook handler both make retries safe." },
+    { "kind": "warn", "text": "If the webhook is dropped, the order stays 'pending' until a reconcile job polls Stripe — don't treat 'pending' as failed." }
+  ]
+}
