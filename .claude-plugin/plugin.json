@@ -4,5 +4,6 @@
   "description": "Generate an interactive, self-contained HTML map of a codebase — a pan/zoom node graph with a detail panel, search, layer filters, flow walkthroughs, and matrices, every node cited to real files. Two modes: whole-system architecture, or one focused business-logic flow.",
   "author": { "name": "Sadi Mohammad Mustafa" },
   "homepage": "https://github.com/sadiamith/code-map",
+  "license": "MIT",
   "keywords": ["architecture", "diagram", "visualization", "codebase", "documentation"]
 }
